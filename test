@@ -1,0 +1,8 @@
+s = "AAA_BBB|CCC_DDD|EEE_FFF"
+
+for item in s.split("|"):
+    words = item.lower().split("_")
+    property_name = words[0] + "".join(w.title() for w in words[1:])
+
+    print(f"- label: {item}")
+    print(f"  propertyName: {property_name}")
