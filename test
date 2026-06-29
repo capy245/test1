@@ -1,8 +1,8 @@
-s = "AAA_BBB|CCC_DDD|EEE_FFF"
+If the location will never contain _ or ., use:
 
-for item in s.split("|"):
-    words = item.lower().split("_")
-    property_name = words[0] + "".join(w.title() for w in words[1:])
+Pattern.compile("^ACDF_([^_.]+)_ITD\\.\\d+\\.\\d{8}\\.txt$");
 
-    print(f"- label: {item}")
-    print(f"  propertyName: {property_name}")
+Here:
+
+[^_.] means any character except _ and .
++ means one or more of those characters
