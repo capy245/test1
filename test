@@ -1,8 +1,6 @@
-If the location will never contain _ or ., use:
+Path path = Paths.get("file.txt");
 
-Pattern.compile("^ACDF_([^_.]+)_ITD\\.\\d+\\.\\d{8}\\.txt$");
-
-Here:
-
-[^_.] means any character except _ and .
-+ means one or more of those characters
+try (BufferedReader reader = Files.newBufferedReader(path)) {
+    String firstLine = reader.readLine();
+    System.out.println(firstLine);
+}
