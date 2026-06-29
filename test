@@ -1,6 +1,19 @@
-Path path = Paths.get("file.txt");
+ObjectReader objectReader = mapper.readerFor(clazz).with(schema);
 
-try (BufferedReader reader = Files.newBufferedReader(path)) {
-    String firstLine = reader.readLine();
-    System.out.println(firstLine);
+MappingIterator<T> iterator;
+
+if (feedDefinition.getSkipRowCount() > 0) {
+    BufferedReader reader = Files.newBufferedReader(file.toPath());
+
+    for (int i = 0; i < feedDefinition.getSkipRowCount(); i++) {
+        if (reader.readLine() == null) {
+            break;
+        }
+    }
+
+    iterator = objectReader.readValues(reader);
+} else {
+    iterator = objectReader.readValues(file);
 }
+
+return iterator.readAll();
