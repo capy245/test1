@@ -1,19 +1,8 @@
-ObjectReader objectReader = mapper.readerFor(clazz).with(schema);
+secret_path = Path("/mnt/secrets/api-key")
 
-MappingIterator<T> iterator;
+print(f"Exists: {secret_path.exists()}")
 
-if (feedDefinition.getSkipRowCount() > 0) {
-    BufferedReader reader = Files.newBufferedReader(file.toPath());
-
-    for (int i = 0; i < feedDefinition.getSkipRowCount(); i++) {
-        if (reader.readLine() == null) {
-            break;
-        }
-    }
-
-    iterator = objectReader.readValues(reader);
-} else {
-    iterator = objectReader.readValues(file);
-}
-
-return iterator.readAll();
+if secret_path.exists():
+    print(secret_path.read_text())
+else:
+    print("Secret file not found")
