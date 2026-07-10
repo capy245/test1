@@ -1,8 +1,132 @@
-secret_path = Path("/mnt/secrets/api-key")
+可以这样拆，比较清晰：
 
-print(f"Exists: {secret_path.exists()}")
+script repo
+  └── pod-cleaner/
+      ├── Dockerfile
+      └── cleanup-pods.sh
 
-if secret_path.exists():
-    print(secret_path.read_text())
-else:
-    print("Secret file not found")
+helm repo
+  └── airflow-app/
+      └── templates/
+          ├── pod-cleaner-serviceaccount.yaml
+          ├── pod-cleaner-rolebinding.yaml
+          └── pod-cleaner-cronjob.yaml
+
+gitops repo
+  └── app-cks/
+      └── airflow-app/
+          ├── pod-cleaner-role.yaml
+          └── values.yaml
+1. script repo
+
+cleanup-pods.sh
+
+#!/bin/sh
+set -e
+
+NAMESPACE="${NAMESPACE:-airflow-app}"
+
+echo "Cleaning Failed pods in namespace: ${NAMESPACE}"
+
+kubectl delete pod \
+  -n "${NAMESPACE}" \
+  --field-selector=status.phase=Failed \
+  --ignore-not-found=true
+
+echo "Pod cleanup completed."
+
+Dockerfile
+
+FROM bitnami/kubectl:latest
+
+COPY cleanup-pods.sh /usr/local/bin/cleanup-pods.sh
+
+USER root
+RUN chmod +x /usr/local/bin/cleanup-pods.sh
+
+ENTRYPOINT ["/usr/local/bin/cleanup-pods.sh"]
+
+Build image 后推到 artifactory / registry，例如：
+
+your-registry/pod-cleaner:1.0.0
+2. gitops repo
+
+pod-cleaner-role.yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-cleaner-role
+  namespace: airflow-app
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+3. helm repo
+
+pod-cleaner-serviceaccount.yaml
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-cleaner
+  namespace: {{ .Release.Namespace }}
+
+pod-cleaner-rolebinding.yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-cleaner-rolebinding
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: pod-cleaner
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: pod-cleaner-role
+  apiGroup: rbac.authorization.k8s.io
+
+pod-cleaner-cronjob.yaml
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pod-cleaner-cronjob
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: {{ .Values.podCleaner.schedule | quote }}
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: pod-cleaner
+          restartPolicy: OnFailure
+          containers:
+            - name: pod-cleaner
+              image: "{{ .Values.podCleaner.image.repository }}:{{ .Values.podCleaner.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: NAMESPACE
+                  value: {{ .Release.Namespace | quote }}
+
+values.yaml
+
+podCleaner:
+  schedule: "0 */6 * * *"
+  image:
+    repository: your-registry/pod-cleaner
+    tag: "1.0.0"
+
+总结：
+
+Role          → gitops repo
+ServiceAccount → helm repo
+RoleBinding   → helm repo
+CronJob       → helm repo
+Script/Image  → script repo
+
+如果这个 Role 只给 pod-cleaner 用，我更建议 Role 也放 Helm repo。
