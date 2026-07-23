@@ -1,132 +1,161 @@
-可以这样拆，比较清晰：
+`batch_run` 和 `batch_step` 的区别可以简单理解成：
 
-script repo
-  └── pod-cleaner/
-      ├── Dockerfile
-      └── cleanup-pods.sh
+> `batch_run` 记录“一次完整 batch execution”
+> `batch_step` 记录“这次 execution 里面每一个处理阶段”
 
-helm repo
-  └── airflow-app/
-      └── templates/
-          ├── pod-cleaner-serviceaccount.yaml
-          ├── pod-cleaner-rolebinding.yaml
-          └── pod-cleaner-cronjob.yaml
+比如一个 Trade batch：
 
-gitops repo
-  └── app-cks/
-      └── airflow-app/
-          ├── pod-cleaner-role.yaml
-          └── values.yaml
-1. script repo
+```text
+Batch Run: trade / 20260723 / run_001
 
-cleanup-pods.sh
+├── DISCOVER
+├── EXTRACT
+├── VALIDATE
+├── TRANSFORM
+├── LOAD
+└── RECONCILE
+```
 
-#!/bin/sh
-set -e
+### `batch_run`
 
-NAMESPACE="${NAMESPACE:-airflow-app}"
+是一条**总记录**，表示这次 batch 从开始到结束的整体状态。
 
-echo "Cleaning Failed pods in namespace: ${NAMESPACE}"
+例如：
 
-kubectl delete pod \
-  -n "${NAMESPACE}" \
-  --field-selector=status.phase=Failed \
-  --ignore-not-found=true
+| run_id  | feed_name | batch_id | start_time | end_time | status    |
+| ------- | --------- | -------- | ---------- | -------- | --------- |
+| run_001 | trade     | 20260723 | 10:00      | 10:25    | COMPLETED |
 
-echo "Pod cleanup completed."
+它回答的是：
 
-Dockerfile
+* 这个 batch 有没有跑？
+* 哪次 execution？
+* 整体成功还是失败？
+* 总共跑了多久？
+* 最终错误是什么？
+* source/target 总 row count 是多少？
 
-FROM bitnami/kubectl:latest
+所以 `batch_run` 类似 Spring Batch 里的 **JobExecution**。
 
-COPY cleanup-pods.sh /usr/local/bin/cleanup-pods.sh
+---
 
-USER root
-RUN chmod +x /usr/local/bin/cleanup-pods.sh
+### `batch_step`
 
-ENTRYPOINT ["/usr/local/bin/cleanup-pods.sh"]
+是一对多关系：
 
-Build image 后推到 artifactory / registry，例如：
+```text
+一个 batch_run
+      │
+      ├── step 1
+      ├── step 2
+      ├── step 3
+      └── step 4
+```
 
-your-registry/pod-cleaner:1.0.0
-2. gitops repo
+例如：
 
-pod-cleaner-role.yaml
+| run_id  | step_name | start_time | end_time | status    |    rows_in |   rows_out |
+| ------- | --------- | ---------- | -------- | --------- | ---------: | ---------: |
+| run_001 | EXTRACT   | 10:00      | 10:05    | COMPLETED | 10,000,000 | 10,000,000 |
+| run_001 | VALIDATE  | 10:05      | 10:07    | COMPLETED | 10,000,000 |  9,999,950 |
+| run_001 | TRANSFORM | 10:07      | 10:15    | COMPLETED |  9,999,950 |  9,500,000 |
+| run_001 | LOAD      | 10:15      | 10:24    | COMPLETED |  9,500,000 |  9,500,000 |
+| run_001 | RECONCILE | 10:24      | 10:25    | COMPLETED |  9,500,000 |  9,500,000 |
 
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pod-cleaner-role
-  namespace: airflow-app
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "delete"]
-3. helm repo
+它回答的是：
 
-pod-cleaner-serviceaccount.yaml
+* 到底哪一步失败？
+* 哪一步最慢？
+* 哪一步 row count 发生变化？
+* restart 能不能从某一步开始？
+* transformation 前后数据量变化多少？
 
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: pod-cleaner
-  namespace: {{ .Release.Namespace }}
+所以 `batch_step` 类似 Spring Batch 里的 **StepExecution**。
 
-pod-cleaner-rolebinding.yaml
+---
 
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pod-cleaner-rolebinding
-  namespace: {{ .Release.Namespace }}
-subjects:
-  - kind: ServiceAccount
-    name: pod-cleaner
-    namespace: {{ .Release.Namespace }}
-roleRef:
-  kind: Role
-  name: pod-cleaner-role
-  apiGroup: rbac.authorization.k8s.io
+### 一个失败例子
 
-pod-cleaner-cronjob.yaml
+假设：
 
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: pod-cleaner-cronjob
-  namespace: {{ .Release.Namespace }}
-spec:
-  schedule: {{ .Values.podCleaner.schedule | quote }}
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: pod-cleaner
-          restartPolicy: OnFailure
-          containers:
-            - name: pod-cleaner
-              image: "{{ .Values.podCleaner.image.repository }}:{{ .Values.podCleaner.image.tag }}"
-              imagePullPolicy: IfNotPresent
-              env:
-                - name: NAMESPACE
-                  value: {{ .Release.Namespace | quote }}
+```text
+EXTRACT      COMPLETED
+VALIDATE     COMPLETED
+TRANSFORM    COMPLETED
+LOAD         FAILED
+RECONCILE    没执行
+```
 
-values.yaml
+那么：
 
-podCleaner:
-  schedule: "0 */6 * * *"
-  image:
-    repository: your-registry/pod-cleaner
-    tag: "1.0.0"
+`batch_run`：
 
-总结：
+```text
+run_001
+status = FAILED
+error = Database timeout
+```
 
-Role          → gitops repo
-ServiceAccount → helm repo
-RoleBinding   → helm repo
-CronJob       → helm repo
-Script/Image  → script repo
+而 `batch_step` 会告诉你更精确的信息：
 
-如果这个 Role 只给 pod-cleaner 用，我更建议 Role 也放 Helm repo。
+```text
+EXTRACT      COMPLETED
+VALIDATE     COMPLETED
+TRANSFORM    COMPLETED
+LOAD         FAILED
+```
+
+所以只有 `batch_run` 时你只能知道：
+
+> 这个 job 失败了。
+
+有 `batch_step` 后你知道：
+
+> 这个 job 在 LOAD 阶段失败了，前面的 transform 已经完成。
+
+---
+
+### 是否一定需要 `batch_step`？
+
+不一定。
+
+如果你的 batch 都很简单：
+
+```text
+read → process → write
+```
+
+而且失败直接整批重跑，那么第一版甚至可以只做：
+
+```text
+batch_run
+batch_file
+```
+
+`batch_step` 可以先不做。
+
+但如果你们以后关心：
+
+* step-level troubleshooting
+* 性能分析
+* restart point
+* row count lineage
+* 哪一步失败
+* 不同处理阶段耗时
+
+那 `batch_step` 就很有价值。
+
+对你们这种 Datamart，我会建议 **保留 `batch_step` 的设计，但第一版字段不用太复杂**。比如先只有：
+
+```text
+run_id
+step_name
+start_time
+end_time
+status
+rows_in
+rows_out
+error_message
+```
+
+就已经够用了。
