@@ -1,19 +1,17 @@
-Hi everyone,
+ANCHOR — 有“锚定、稳定基准”的感觉
+表达 China Onshore data quality 是数据可信的基础。比较适合 enterprise/internal platform。
 
-Thank you for registering for our upcoming events! This is a friendly reminder about the event schedule:
+PULSE — 如果系统主要做 DQ monitoring / health check
+含义是持续监测数据健康状态，像 “Data Quality Pulse”。
 
-- **Perler Bead Activity:** October 20 at **3:00 PM**
-- **Zoom Broadcast:** October 22 at **3:00 PM** in **13AB**
+COMPASS — 如果系统除了检查质量，还指导问题定位、治理
+有“给数据治理指方向”的感觉，比较高级。
 
-Please arrive a few minutes early so we can get started on time.
+SHIELD — 偏保护、拦截坏数据
+很适合做 upstream validation / gatekeeping 的 DQ system。
 
-We’ll also have some giveaways for participants:
-- Everyone who attends can receive a **pin**
-- Participants who complete the activity can also receive a **tie**
+BEACON — “灯塔”
+强调可观测性、异常发现、指引。比如 Onshore Data Quality Beacon。
 
-Photos of the pin and tie are attached below.
-
-We look forward to seeing you there!
-
-Best,  
-Qiao
+PRISM — 有“从多个维度看数据质量”的含义
+如果你们会看 completeness、accuracy、timeliness、consistency 等多个 DQ dimension，这个名字很贴切。
