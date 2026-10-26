@@ -1,17 +1,15 @@
-ANCHOR — 有“锚定、稳定基准”的感觉
-表达 China Onshore data quality 是数据可信的基础。比较适合 enterprise/internal platform。
+Hi Team,
 
-PULSE — 如果系统主要做 DQ monitoring / health check
-含义是持续监测数据健康状态，像 “Data Quality Pulse”。
+I'm setting up this session to introduce the new DataX system and walk through the key information needed for production support.
 
-COMPASS — 如果系统除了检查质量，还指导问题定位、治理
-有“给数据治理指方向”的感觉，比较高级。
+Agenda:
 
-SHIELD — 偏保护、拦截坏数据
-很适合做 upstream validation / gatekeeping 的 DQ system。
+DataX overview and architecture
 
-BEACON — “灯塔”
-强调可观测性、异常发现、指引。比如 Onshore Data Quality Beacon。
+Key workflows and upstream/downstream dependencies
 
-PRISM — 有“从多个维度看数据质量”的含义
-如果你们会看 completeness、accuracy、timeliness、consistency 等多个 DQ dimension，这个名字很贴切。
+Job scheduling and monitoring
+
+Common issues, troubleshooting, and escalation process
+
+Q&A
