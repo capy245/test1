@@ -1,15 +1,1 @@
-Hi Team,
-
-I'm setting up this session to introduce the new DataX system and walk through the key information needed for production support.
-
-Agenda:
-
-DataX overview and architecture
-
-Key workflows and upstream/downstream dependencies
-
-Job scheduling and monitoring
-
-Common issues, troubleshooting, and escalation process
-
-Q&A
+powershell -Command "Get-CimInstance Win32_Process -Filter 'ProcessId=12345' | Select-Object -ExpandProperty CommandLine"
