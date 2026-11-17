@@ -1,1 +1,153 @@
-powershell -Command "Get-CimInstance Win32_Process -Filter 'ProcessId=12345' | Select-Object -ExpandProperty CommandLine"
+# 防止 Airflow DAG 结束后 Kubernetes Pod 仍在运行
+
+## 1. 背景及问题描述
+
+当前使用 Apache Airflow 3.2.2 和 KubernetesPodOperator (KPO) 执行 ETL 任务。
+
+目前存在一种潜在风险：Airflow DAG 或 Task 已经结束或进入 Failed 状态，但对应的 Kubernetes Pod 仍然在运行。
+
+由于 Kubernetes Pod 独立于 Airflow Worker 运行，Airflow Task 状态发生变化并不一定意味着 Pod 中的业务进程已经停止。
+
+如果 Airflow 随后触发 Retry 或 DAG 被重新运行，旧 Pod 和新 Pod 可能同时执行相同的数据加载任务，导致重复数据加载、数据不一致等问题。
+
+## 2. 可能导致 Pod 未终止的场景
+
+### 2.1 Task 执行超时
+- Airflow 的 execution_timeout 被触发。
+- Airflow 尝试终止 KPO Task，但 Kubernetes Pod 未能成功终止。
+- Pod 可能继续在 Kubernetes 集群中运行。
+
+### 2.2 Worker / Task Runner 异常退出
+- Worker 进程发生 OOM。
+- Worker 收到 SIGKILL。
+- Worker 所在节点发生故障或被 Eviction。
+- 由于 Worker 无法执行 KPO 的清理逻辑，独立运行的 Kubernetes Pod 可能继续执行。
+
+### 2.3 手动修改 Task 状态
+- 在 Airflow UI 中手动 Mark Failed 或 Mark Success。
+- Clear 一个正在运行的 Task 并重新触发。
+- 需要注意，Task 被手动 Kill 时使用的是 on_kill_action，而不是 on_finish_action。
+
+### 2.4 Scheduler / Triggerer 异常
+- Scheduler 或 Triggerer 重启。
+- Airflow 与 Kubernetes API Server 之间发生网络连接异常。
+- Airflow 无法及时获取 Pod 状态，导致 Task 和 Pod 状态不同步。
+
+### 2.5 Kubernetes 节点异常
+- Node Drain。
+- Pod Eviction。
+- Node 与 Kubernetes API Server 失去连接。
+- Pod 可能进入 Terminating 或 Unknown 状态，实际容器状态需要进一步确认。
+
+### 2.6 Task Retry / DAG Rerun
+- 旧 Pod 仍然运行时，Airflow 启动新的 Task Attempt。
+- 如果无法重新连接旧 Pod，可能产生新的 Pod。
+- 新旧 Pod 同时执行相同的 ETL 数据加载任务。
+
+## 3. 推荐解决方案
+
+采用 Kubernetes 和 Airflow 两层超时控制，并明确 Pod 清理策略。
+
+### 3.1 Kubernetes 层：设置 Pod 最大运行时间
+
+使用 KPO 参数：
+
+`active_deadline_seconds`
+
+该参数对应 Kubernetes Pod Spec 中的 `activeDeadlineSeconds`。
+
+超过指定时间后：
+- Kubernetes 终止 Pod 中的容器。
+- Pod 进入 Failed 状态。
+- 保留 Failed Pod 对象，以便后续 Debug。
+
+这样即使 Airflow Worker 异常退出，Pod 也有独立的最大运行时间限制。
+
+### 3.2 Airflow 层：设置 Task Timeout
+
+使用：
+
+`execution_timeout`
+
+建议将 Airflow execution_timeout 设置得略长于 Kubernetes active_deadline_seconds。
+
+目的：
+- 让 Kubernetes 先终止超时 Pod。
+- 让 KPO 检测到 Pod Failed 状态。
+- 最终将 Airflow Task 标记为 Failed。
+
+避免 Airflow 先触发 Timeout 并进入 KPO Kill 清理路径。
+
+### 3.3 Pod 清理策略
+
+建议配置：
+
+`on_finish_action="delete_succeeded_pod"`
+
+预期行为：
+
+| 场景 | Airflow Task | Kubernetes Pod |
+|---|---|---|
+| 正常执行成功 | Success | 自动删除 |
+| 应用程序执行失败 | Failed | 保留，方便 Debug |
+| Kubernetes Deadline 超时 | Failed | 容器终止，Pod 保留 |
+| Task 被手动 Kill | 取决于操作 | 由 on_kill_action 决定 |
+
+注意：
+
+`on_finish_action` 和 `on_kill_action` 是两套独立的清理机制。
+
+- on_finish_action：控制 Pod 正常完成后的清理。
+- on_kill_action：控制 Task 被 Kill 时的 Pod 清理。
+
+默认 `on_kill_action="delete_pod"`，如果改成 `keep_pod`，被 Kill 的 Pod 可能继续运行。因此不能简单设置 keep_pod 来同时实现终止进程和保留 Pod。
+
+如果需要在手动 Kill 时也实现「终止容器但保留 Pod」，需要额外设计清理逻辑并验证。
+
+### 3.4 Pod 重连及重复执行防护
+
+- 保持 `reattach_on_restart=True`，利用 KPO 现有的 Pod 重连机制。
+- 在 Worker 重启或 Task Retry 时，优先确认是否存在之前的运行中 Pod。
+- ETL 数据加载建议增加 Batch ID / Run ID 校验。
+- 尽可能采用幂等写入，避免重复执行造成数据问题。
+- 必要时增加同一业务批次的并发控制机制。
+
+## 4. Deferrable Mode
+
+KPO 的 `deferrable` 默认值通常为 False，但实际值受 Airflow 配置影响：
+
+`[operators] default_deferrable`
+
+建议检查实际部署配置，并在 DAG 中显式设置：
+
+`deferrable=False`
+
+这样可以使用同步模式，由 Worker 持续监控 Pod 状态，减少 Triggerer 相关的排查变量。
+
+注意：同步模式不能完全避免 Worker 异常退出造成的孤儿 Pod。
+
+## 5. 验收测试
+
+| 测试场景 | 预期结果 |
+|---|---|
+| 正常执行完成 | Task Success，Pod 自动删除 |
+| 应用程序返回非零退出码 | Task Failed，Pod 保留 |
+| 超过 active_deadline_seconds | 容器终止，Task Failed，Pod 保留 |
+| Worker 被 SIGKILL | 验证 Pod 是否继续运行，以及 Retry 是否能重新连接 |
+| Scheduler 重启 | 验证 Task 与 Pod 状态恢复 |
+| Triggerer 重启 | 验证 Deferred Task 恢复（如启用 Deferrable Mode） |
+| 手动 Mark Failed | 验证 on_kill_action 行为 |
+| Clear 并重新执行 | 确认不会出现新旧 ETL Pod 并发加载相同数据 |
+
+## 6. 最终建议
+
+优先实施以下措施：
+
+1. 配置 `active_deadline_seconds`，确保 Kubernetes 可以独立终止超时容器。
+2. 配置略长于 Kubernetes Deadline 的 `execution_timeout`。
+3. 设置 `on_finish_action="delete_succeeded_pod"`，成功自动删除，失败保留供 Debug。
+4. 检查并明确 `deferrable=False`。
+5. 保持 Pod 重连能力，并增加 ETL 幂等性及并发控制。
+6. 对 Worker 异常退出、手动 Kill、Retry 和 DAG Rerun 等场景进行测试。
+
+**核心目标：Airflow Task 进入 Failed 状态时，不能仅凭 Airflow 状态判断 ETL 进程已经停止；必须确认 Kubernetes Pod 中的实际容器已经终止，避免重复数据加载。**
